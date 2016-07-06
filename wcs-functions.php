@@ -13,6 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once( 'includes/wcs-deprecated-functions.php' );
+require_once( 'includes/wcs-conditional-functions.php' );
 require_once( 'includes/wcs-formatting-functions.php' );
 require_once( 'includes/wcs-cart-functions.php' );
 require_once( 'includes/wcs-order-functions.php' );
@@ -113,7 +114,7 @@ function wcs_create_subscription( $args = array() ) {
 		'created_via'        => ( ! empty( $order ) ) ? $order->created_via : '',
 		'order_version'      => ( ! empty( $order ) ) ? $order->order_version : WC_VERSION,
 		'currency'           => ( ! empty( $order ) ) ? $order->order_currency : get_woocommerce_currency(),
-		'prices_include_tax' => ( ! empty( $order ) ) ? ( ( $order->prices_include_tax ) ? 'yes' : 'no' ) : get_option( 'woocommerce_prices_include_tax' ),
+		'prices_include_tax' => ( ! empty( $order ) ) ? ( ( $order->prices_include_tax ) ? 'yes' : 'no' ) : get_option( 'woocommerce_prices_include_tax' ), // we don't use wc_prices_include_tax() here because WC doesn't use it in wc_create_order(), not 100% sure why it doesn't also check the taxes are enabled, but there could forseeably be a reason
 	);
 
 	$args              = wp_parse_args( $args, $default_args );
@@ -169,7 +170,7 @@ function wcs_create_subscription( $args = array() ) {
 		$subscription_data['post_status']  = 'wc-' . $args['status'];
 	}
 
-	$subscription_id = wp_insert_post( apply_filters( 'woocommerce_new_subscription_data', $subscription_data ), true );
+	$subscription_id = wp_insert_post( apply_filters( 'woocommerce_new_subscription_data', $subscription_data, $args ), true );
 
 	if ( is_wp_error( $subscription_id ) ) {
 		return $subscription_id;

@@ -1,5 +1,98 @@
 *** WooCommerce Subscriptions Changelog ***
 
+2016.06.24 - version 2.0.17
+ * Tweak: add support for bulk editing subscription variation prices using relative increase or decrease from existing price (either fixed amount or per cent). (PR#1425)
+ * Tweak: use filterable helper function when validating switch request to improve compatibilty with Name Your Price and other plugins. (PR#1453)
+ * Tweak: require payment when switching from $0 / period subscriptions to a non-zero / period subscription if the store is not disabling automatic payments so that future payments on the new subscription can be processed automatically. (PR#1420)
+ * Tweak: use new WooCommerce 2.6 hook to load the View Subscription template to so the view-subscription.php template does not require addition WC version checks. (PR#1459)
+ * Tweak: add tooltip to the next payment date displayed on the Subscriptions administration screen to indiciate that the date is only a guide when the payment gateway controls the billing schedule (like PayPal Standard). (PR#1445)
+ * Fix: make sure PayPal Standard subscriptions are cancelled at PayPal when switching a subscription with PayPal Standard as the payment method but using a different payment method for the switch transaction. (PR#1419)
+ * Fix: do not generate a renewal order for the PayPal Standard IPN message for $0.01 payments, which is used to get two trial periods on a subscription to align a synchronised payment date, not to actually process a $0.01 payment. (PR#1413)
+ * Fix: calculate correct next payment date when paying for old failed or manual renewal orders by updating the post dates on the order when the order's status is changed to indicate payment is completed. (PR#1435)
+ * Fix: do not reduce stock for initial order of synchronised products when no initial payment (like sign-up fee or prorated amount) is charged, as nothing is shipped for that order. (PR#1438)
+ * Fix: use new WooCommerce 2.6 hook to load the View Subscription template to prevent a PHP notice about deprecated my-account.php template. (PR#1459)
+ * Fix: provide empty default when accessing chosen shipping methods from the session to fix 'Invalid argument supplied for foreach()' PHP notice when no default shipping method is set. (PR#1456)
+ * Fix: update subscriptions using PayPal Reference Transactions to "pending-cancelation" status rather than "cancelled" when a PayPal Billing Agreement is cancelled to account for pre-paid time. (PR#1468)
+ * Fix: escape the style attribute for synchronisation fields on the Edit Product screen correctly to avoid escaping attribute quotes. (PR#1464)
+ * Fix: do not allow switching using PayPal Standard as the payment method for the switch. (PR#1461)
+ * Fix: do not unnecessarily copy switch related line item meta data to renewal orders. (PR#1423)
+ * Fix: display correct order date on hover in the Related Orders meta box. (PR#1442)
+
+2016.06.10 - version 2.0.16
+ * Tweak: display recurring shipping selection fields on cart page instead of notice to select recurring shipping on checkout page (when unique recurring shipping methods are required). (PR#1431)
+ * Tweak: update cart hash creation for latest logic used in WooCommerce 2.6. (PR#1426)
+ * Tweak: throw an exception if a scheduled next payment or expiration hook is triggered for a subscription ID that no longer exists (due to a corrupted database). (PR#1429)
+ * Tweak: add order type parameter to WC_Subscription::get_last_order() so it can be used to return switch orders. (PR#1398)
+ * Fix: only validate recurring shipping for carts that have future recurring payments. (PR#1440)
+ * Fix: trigger subscription.created webhook for subscriptions purchased via checkout. (PR#1428)
+ * Fix: function declaration incompatible with WooCommerce 2.6 release candidate (specifically: WC_Subscription::set_payment_method()). (PR#1434)
+ * Fix: duplicate My Account navigation with WooCommerce 2.6 release candidate. (PR#1437)
+ * Fix: incorrect recurring shipping amount being applied to subscription products that do not require recurring shipping if a product with an identical billing schedule that required shipping was added then removed from the cart. (PR#1394)
+ * Fix: remove unused global variable in WCS_Query. (PR#1424)
+ * Fix: remove redundant in_the_loop() call in WCS_Query. (PR#1424)
+
+2016.05.28 - version 2.0.15
+ * Tweak: WooCommerce 2.6 Compatibility.
+ * Tweak: with the upcoming WooCommerce 2.6, add a Subscriptions tab to the My Account tabs and display subscriptions on that page instead of the My Account page, which is now a "Dashboard" in WooCommerce 2.6. (PR#1377)
+ * Tweak: with the upcoming WooCommerce 2.6, display the new My Account tabs on the My Account > View Subscription page. (PR#1396)
+ * Tweak: improve display of the My Account > View Subscription page on small screens. (PR#1396)
+ * Tweak: pass $args param to 'woocommerce_new_subscription_data' filter. (PR#1410)
+ * Tweak: use pretty date on hover for Subscription admin screen dates. (PR#1416)
+ * Tweak: remove WooCommerce < 2.3 compatibility code as this versions are no longer supported. (PR#1395)
+ * Fix: do not attempt to validate recurring shipping methods when no recurring shipping is required, for example, if the subscription is for one payment or using a Subscribe All the Things product. (PR#1404)
+ * Fix: do not require payment for switches with $0 switching cost unless the subscription was using PayPal Standard as the payment method and when that's the case, update the subscription payment method after the switch payment is processed if the new payment method is not PayPal. (PR#1412)
+ * Fix: display of related orders meta box on administration Edit Order and Edit Subscription screens with WooCommerce 2.6. (PR#1387)
+ * Fix: always trigger subscription renewal payment hooks (i.e. 'woocommerce_subscription_renewal_payment_complete' and 'woocommerce_subscription_renewal_payment_failed') for the first renewal payment, even if there was no initial order for the subscription. Previously, the first payment was not considered a renewal payment, even if it was on a renewal order. (PR#1390)
+ * Fix: prioritise sign-up fee and trial length filters in cart calculations over value set on cart item. (PR#1378)
+ * Fix: display correct "Total" row heading for the Related Subscriptions table shown on the My Account > View Order page on small screens. (PR#1396)
+ * Fix: with the upcoming WooCommerce 2.6, do not create a new order instead of completing payment on the renewal order when completing renewal payment via cart/checkout. (PR#1407)
+ * Fix: with the upcoming WooCommerce 2.6, do not depend on the 'wc-admin-order-meta-boxes-modal' JavaScript, as it no longer exists. (PR#1407)
+
+2016.05.14 - version 2.0.14
+ * Tweak: add automatic install plugin URL for WooCommerce when it's not installed. (PR#1345)
+ * Tweak: add new 'wcs_pre_get_users_subscriptions' filter for custom caching. (PR#1360)
+ * Fix: make sure shipping line items are added to subscriptions for subscription purchases where the recurring packages are different to the initial packages (i.e. subscriptions with free trial, sync'd or multiple subscription purchases with different shipping classes) and there is only one shipping method available and a customer had previously chosen a different method front end of the store, but that method has since been disabled. (PR#1319)
+ * Fix: don't empty the cart if adding a product already in the cart when there are no payment gateways which support multiple subscriptions and manual renewals are disabled. (PR#1347)
+ * Fix: calculate correct next payment and end date for synchronised subscriptions with a `0` trial period value (i.e. not empty or ''). (PR#1348)
+ * Fix: set default values for subscriptions dropdown fields when bulk adding variations. (PR#1350)
+ * Fix: rather than using the trial period and interval to determine when to calculate a product's expiration date from, use the date returned by WC_Subscriptions_Product::get_trial_expiration_date() to honour any 3rd party code attaching to the 'woocommerce_subscriptions_product_trial_expiration_date' hook. (PR#1339)
+ * Fix: display the correct recurring shipping price when store is using tax inclusive pricing. (PR#1367)
+ * Fix: only apply recurring percent coupons when there is no free trial. (PR#1365)
+ * Fix: make sure a recurring shipping method has been selected before allowing checkout for products with a free trial or synchronised. (PR#1358)
+ * Fix: display shipping addresses on the Order Received page and in order emails for orders that do not require shipping but are to purchase a subscription which does require shipping in future because they have a free trial or are synchronised. (PR#1358)
+ * Fix: potential fatal error when a customer views the View Subscription page for a subscription with a line item that can be switched but has been deleted. (PR#1376)
+
+2016.04.22 - version 2.0.13
+ * Tweak: make recurring shipping packages globally available by storing them in WC()->shipping->packages. (PR#1294)
+ * Tweak: add new 'use_per_slash' param in wcs_price_string() function to allow code calling wcs_price_string() to choose whether to use a "/" or longer from "every" for subscriptions which renew each period. (PR#1297)
+ * Tweak: improve performance of POST requets to /wc-api/subscriptions/ to create a new subscription by only calculating customer's total spent amount once, instead of when creating the order and subscription. (PR#1316)
+ * Tweak: improve performance when loading the front-end product page for a variable subscription product that is limited for logged in users with a subscription to one of the variations of that product. (PR#1324)
+ * Fix: compatibility with Local Pickup Plus. (PR#1291 PR#1292 PR#1293 PR#1329)
+ * Fix: only modify shipping packages when cart contains a subscription. Fixes display of shipping methods selection fields when a customer attempts to pay for a failed or manual renewal order that contains a synced subscription product. (PR#1291)
+ * Fix: pass correct shipping package key to callbacks on the 'woocommerce_add_shipping_order_item' hook for recurring shipping fields (PR#1292)
+ * Fix: pass the recurring package key as index value to the cart-recurring-shipping.php template to fix compatibility with shipping extensions that hook into that, namely Local Pickup Plus. (PR#1293)
+ * Fix: incorrect tax rate applied to recurring totals when using Local Pickup Plus as the shipping method. (PR#1329)
+ * Fix: incorrect admin email being sent when paying for a failed renewal order. (PR#1310)
+ * Fix: make sure translations are ready before attempting to use them. Also load plugin text domain on 'init' instead of 'plugins_loaded' to improve compatibility with localisation extension. (PR#1303)
+ * Fix: display of inventory settings on the Edit Product admin screen when loading or changing to a subscription product type. (PR#1322)
+ * Fix: ensure sign up fee paid includes the paid tax if tax inclusive so that it is consistent with the sign up fee due amount and the prorated sign-up fee amount is calculated correctly when upgrading/downgrading. (PR#1312)
+ * Fix: do not discount sign-up fees with recurring coupons. (PR#1325)
+ * Fix: allow end date for a subscription to be the same as the last payment date. Fixes subscriptions with an abandonded PayPal order being able to be suspended/activated if that pending order is cancelled. (PR#1330)
+ * Fix: calculate correct end date for synchronised subscription products with a free trial. (PR#1327)
+ * Fix: prorated upgrade/downgrade amount when switching a synchronised subscription before the first payment date. (PR#1308)
+ * Fix: set correct number of installments when signing up for a synchronised subscription with an end date at PayPal Standard. (PR#1313)
+ * Fix: only allow one variation of a limited variable product to be added to the cart to avoid the customer being able to buy multiple variations of a limited product. (PR#1332)
+ * Fix: "The next_payment date must occur after the trial end date" error notice sometimes dislpayed on checkout when purchasing a synchronised product with a free trial period. (PR#1324)
+ * Fix: add fees applied to a renewal, initial order or subscription to the cart when paying for renewal, an initial sign-up or resubscribe. (PR#1334)
+
+2016.03.18 - version 2.0.12
+ * Tweak: new 'woocommerce_my_subscriptions_actions' hook in the My Subscriptions table
+ * Fix: shipping bug when the packages for recurring orders were different to those for the initial order. Fixes compatibility with Table Rate shipping and occasional issues with manual renewals for products with a free trial or synchronised renewal date. Refactoring of shipping selection required to address the issue: shipping method selection fields are now displayed on checkout in the Recurring Totals section when the available recurring shipping rates are different to the rates for the initial order (either because the methods are different, the costs are different, or the package contents is different).
+ * Fix: error on WooCommerce > Edit Subscription admin screen for subscriptions with recurring coupons caused by attempting to use WC()->session on backend/admin requests
+ * Fix: search customer/user email address when searching via the WooCommerce > Subscriptions administration screen
+ * Fix: 404's of the "My Account > View Subscription" page after updating WooCommerce
+ * Fix: include up-to-date pot file
+
 2016.03.03 - version 2.0.11
  * Fix: activation issue with v2.0.10 on some sites due to get_editable_roles() function not being defined
  * Tweak: don't allow subscribers to cancel subscriptions with pending cancellation status

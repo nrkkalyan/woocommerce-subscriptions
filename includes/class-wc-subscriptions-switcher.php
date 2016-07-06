@@ -10,6 +10,9 @@
  */
 class WC_Subscriptions_Switcher {
 
+	/* cache whether a given product is purchasable or not to save running lots of queries for the same product in the same request */
+	protected static $is_purchasable_cache = array();
+
 	/**
 	 * Bootstraps the class and hooks required actions & filters.
 	 *
@@ -103,6 +106,15 @@ class WC_Subscriptions_Switcher {
 
 		// Revoke download permissions from old switch item
 		add_action( 'woocommerce_subscriptions_switched_item', __CLASS__ . '::remove_download_permissions_after_switch', 10, 3 );
+
+		// Check if we need to force payment on this switch, just after calculating the prorated totals in @see self::calculate_prorated_totals()
+		add_filter( 'woocommerce_subscriptions_calculated_total', __CLASS__ . '::set_force_payment_flag_in_cart', 10, 1 );
+
+		// Require payment when switching from a $0 / period subscription to a non-zero subscription to process automatic payments
+		add_filter( 'woocommerce_cart_needs_payment', __CLASS__ . '::cart_needs_payment' , 50, 2 );
+
+		// Require payment when switching from a $0 / period subscription to a non-zero subscription to process automatic payments
+		add_filter( 'woocommerce_payment_successful_result', __CLASS__ . '::maybe_set_payment_method' , 10, 2 );
 	}
 
 	/**
@@ -114,12 +126,13 @@ class WC_Subscriptions_Switcher {
 		global $post;
 
 		// If the current user doesn't own the subscription, remove the query arg from the URL
-		if ( isset( $_GET['switch-subscription'] ) ) {
+		if ( isset( $_GET['switch-subscription'] ) && isset( $_GET['item'] ) ) {
 
 			$subscription = wcs_get_subscription( $_GET['switch-subscription'] );
+			$line_item    = wcs_get_order_item( $_GET['item'], $subscription );
 
 			// Visiting a switch link for someone elses subscription or if the switch link doesn't contain a valid nonce
-			if ( ! is_object( $subscription ) || ! current_user_can( 'switch_shop_subscription', $subscription->id ) || empty( $_GET['_wcsnonce'] ) || ! wp_verify_nonce( $_GET['_wcsnonce'], 'wcs_switch_request' ) || 'no' === get_option( WC_Subscriptions_Admin::$option_prefix . '_allow_switching', 'no' ) ) {
+			if ( ! is_object( $subscription ) || empty( $_GET['_wcsnonce'] ) || ! wp_verify_nonce( $_GET['_wcsnonce'], 'wcs_switch_request' ) || empty( $line_item ) || ! self::can_item_be_switched_by_user( $line_item, $subscription )  ) {
 
 				wp_redirect( remove_query_arg( array( 'switch-subscription', 'auto-switch', 'item', '_wcsnonce' ) ) );
 				exit();
@@ -1102,7 +1115,7 @@ class WC_Subscriptions_Switcher {
 
 				// Because product add-ons etc. don't apply to sign-up fees, it's safe to use the product's sign-up fee value rather than the cart item's
 				$sign_up_fee_due  = $product->subscription_sign_up_fee;
-				$sign_up_fee_paid = $subscription->get_items_sign_up_fee( $existing_item );
+				$sign_up_fee_paid = $subscription->get_items_sign_up_fee( $existing_item, 'inclusive_of_tax' );
 
 				// Make sure total prorated sign-up fee is prorated across total amount of sign-up fee so that customer doesn't get extra discounts
 				if ( $cart_item['quantity'] > $existing_item['qty'] ) {
@@ -1126,8 +1139,13 @@ class WC_Subscriptions_Switcher {
 			$next_payment_timestamp  = $cart_item['subscription_switch']['next_payment_timestamp'];
 			$days_until_next_payment = ceil( ( $next_payment_timestamp - gmdate( 'U' ) ) / ( 60 * 60 * 24 ) );
 
-			// Find the number of days between the two
-			$days_in_old_cycle = $days_until_next_payment + $days_since_last_payment;
+			// If the subscription contains a synced product and the next payment is actually the first payment, determine the days in the "old" cycle from the subscription object
+			if ( WC_Subscriptions_Synchroniser::subscription_contains_synced_product( $subscription->id ) && WC_Subscriptions_Synchroniser::calculate_first_payment_date( $product, 'timestamp', $subscription->get_date( 'start' ) ) == $next_payment_timestamp ) {
+				$days_in_old_cycle = wcs_get_days_in_cycle( $subscription->billing_period, $subscription->billing_interval );
+			} else {
+				// Find the number of days between the two
+				$days_in_old_cycle = $days_until_next_payment + $days_since_last_payment;
+			}
 
 			// Find the actual recurring amount charged for the old subscription (we need to use the '_recurring_line_total' meta here rather than '_subscription_recurring_amount' because we want the recurring amount to include extra from extensions, like Product Add-ons etc.)
 			$old_recurring_total = $existing_item['line_total'];
@@ -1148,20 +1166,7 @@ class WC_Subscriptions_Switcher {
 			} else {
 
 				// We need to figure out the price per day for the new subscription based on its billing schedule
-				switch ( $item_data->subscription_period ) {
-					case 'day' :
-						$days_in_new_cycle = $item_data->subscription_period_interval;
-						break;
-					case 'week' :
-						$days_in_new_cycle = $item_data->subscription_period_interval * 7;
-						break;
-					case 'month' :
-						$days_in_new_cycle = $item_data->subscription_period_interval * 30.4375; // Average days per month over 4 year period
-						break;
-					case 'year' :
-						$days_in_new_cycle = $item_data->subscription_period_interval * 365.25; // Average days per year over 4 year period
-						break;
-				}
+				$days_in_new_cycle = wcs_get_days_in_cycle( $item_data->subscription_period, $item_data->subscription_period_interval );
 			}
 
 			// We need to use the cart items price to ensure we include extras added by extensions like Product Add-ons
@@ -1387,31 +1392,39 @@ class WC_Subscriptions_Switcher {
 	 * @return bool
 	 */
 	public static function is_purchasable( $is_purchasable, $product ) {
-		if ( false === $is_purchasable && wcs_is_product_switchable_type( $product ) && WC_Subscriptions_Product::is_subscription( $product->id ) && 'no' != $product->limit_subscriptions && is_user_logged_in() && wcs_user_has_subscription( 0, $product->id, $product->limit_subscriptions ) ) {
 
-			// Adding to cart from the product page
-			if ( isset( $_GET['switch-subscription'] ) ) {
+		$product_key = ! empty( $product->variation_id ) ? $product->variation_id : $product->id;
 
-				$is_purchasable = true;
+		if ( ! isset( self::$is_purchasable_cache[ $product_key ] ) ) {
 
-			// Validating when restring cart from session
-			} elseif ( self::cart_contains_switches() ) {
+			if ( false === $is_purchasable && wcs_is_product_switchable_type( $product ) && WC_Subscriptions_Product::is_subscription( $product->id ) && 'no' != $product->limit_subscriptions && is_user_logged_in() && wcs_user_has_subscription( 0, $product->id, $product->limit_subscriptions ) ) {
 
-				$is_purchasable = true;
+				// Adding to cart from the product page
+				if ( isset( $_GET['switch-subscription'] ) ) {
 
-			// Restoring cart from session, so need to check the cart in the session (self::cart_contains_subscription_switch() only checks the cart)
-			} elseif ( isset( WC()->session->cart ) ) {
+					$is_purchasable = true;
 
-				foreach ( WC()->session->cart as $cart_item_key => $cart_item ) {
-					if ( $product->id == $cart_item['product_id'] && isset( $cart_item['subscription_switch'] ) ) {
-						$is_purchasable = true;
-						break;
+				// Validating when restring cart from session
+				} elseif ( self::cart_contains_switches() ) {
+
+					$is_purchasable = true;
+
+				// Restoring cart from session, so need to check the cart in the session (self::cart_contains_subscription_switch() only checks the cart)
+				} elseif ( isset( WC()->session->cart ) ) {
+
+					foreach ( WC()->session->cart as $cart_item_key => $cart_item ) {
+						if ( $product->id == $cart_item['product_id'] && isset( $cart_item['subscription_switch'] ) ) {
+							$is_purchasable = true;
+							break;
+						}
 					}
 				}
 			}
+
+			self::$is_purchasable_cache[ $product_key ] = $is_purchasable;
 		}
 
-		return $is_purchasable;
+		return self::$is_purchasable_cache[ $product_key ];
 	}
 
 	/**
@@ -1644,6 +1657,122 @@ class WC_Subscriptions_Switcher {
 
 		$product_id = wcs_get_canonical_product_id( $old_item );
 		WCS_Download_Handler::revoke_downloadable_file_permission( $product_id, $subscription->id, $subscription->customer_user );
+	}
+
+	/**
+	 * If we are switching a $0 / period subscription to a non-zero $ / period subscription, and the existing
+	 * subscription is using manual renewals but manual renewals are not forced on the site, we need to set a
+	 * flag to force WooCommerce to require payment so that we can switch the subscription to automatic renewals
+	 * because it was probably only set to manual because it was $0.
+	 *
+	 * We need to determine this here instead of on the 'woocommerce_cart_needs_payment' because when payment is being
+	 * processed, we will have changed the associated subscription data already, so we can't check that subscription's
+	 * values anymore. We determine it here, then ue the 'force_payment' flag on 'woocommerce_cart_needs_payment' to
+	 * require payment.
+	 *
+	 * @param int $total
+	 * @since 2.0.16
+	 */
+	public static function set_force_payment_flag_in_cart( $total ) {
+
+		if ( $total > 0 || 'yes' == get_option( WC_Subscriptions_Admin::$option_prefix . '_turn_off_automatic_payments', 'no' ) || false === self::cart_contains_switches() ) {
+			return $total;
+		}
+
+		$old_recurring_total = 0;
+		$new_recurring_total = 0;
+		$has_future_payments = false;
+
+		// Check that the new subscriptions are not for $0 recurring and there is a future payment required
+		foreach ( WC()->cart->recurring_carts as $cart ) {
+
+			$new_recurring_total += $cart->total;
+
+			if ( $cart->next_payment_date > 0 ) {
+				$has_future_payments = true;
+			}
+		}
+
+		foreach ( WC()->cart->get_cart() as $cart_item_key => $cart_item ) {
+
+			if ( ! isset( $cart_item['subscription_switch']['subscription_id'] ) ) {
+				continue;
+			}
+
+			$subscription = wcs_get_subscription( $cart_item['subscription_switch']['subscription_id'] );
+
+			// Check that the existing subscriptions are for $0 recurring
+			$old_recurring_total = $subscription->get_total();
+
+			if ( 0 == $old_recurring_total && $new_recurring_total > 0 && true === $has_future_payments && $subscription->is_manual() ) {
+				WC()->cart->cart_contents[ $cart_item_key ]['subscription_switch']['force_payment'] = true;
+			}
+		}
+
+		return $total;
+	}
+
+	/**
+	 * Require payment when switching from a $0 / period subscription to a non-zero subscription to process
+	 * automatic payments for future renewals, as indicated by the 'force_payment' flag on the switch, set in
+	 * @see self::set_force_payment_flag_in_cart().
+	 *
+	 * @param bool $needs_payment
+	 * @param object $cart
+	 * @since 2.0.16
+	 */
+	public static function cart_needs_payment( $needs_payment, $cart ) {
+
+		if ( false === $needs_payment && 0 == $cart->total && false !== ( $switch_items = self::cart_contains_switches() ) ) {
+
+			foreach ( $switch_items as $switch_item ) {
+				if ( isset( $switch_item['force_payment'] ) && true === $switch_item['force_payment'] ) {
+					$needs_payment = true;
+					break;
+				}
+			}
+		}
+
+		return $needs_payment;
+	}
+
+	/**
+	 * Once payment is processed on a switch from a $0 / period subscription to a non-zero $ / period subscription, if
+	 * payment was completed with a payment method which supports automatic payments, update the payment on the subscription
+	 * and the manual renewals flag so that future renewals are processed automatically.
+	 *
+	 * @param array $payment_processing_result
+	 * @param int $order_id
+	 * @since 2.0.16
+	 */
+	public static function maybe_set_payment_method( $payment_processing_result, $order_id ) {
+
+		// Only update the payment method the order contains a switch, and payment was processed (i.e. a paid date has been set) not just setup for processing, which is the case with PayPal Standard (which is handled by WCS_PayPal_Standard_Switcher)
+		if ( wcs_order_contains_switch( $order_id ) && false != get_post_meta( $order_id, '_paid_date', true ) ) {
+
+			$order = wc_get_order( $order_id );
+
+			foreach ( wcs_get_subscriptions_for_switch_order( $order_id ) as $subscription ) {
+
+				if ( false === $subscription->is_manual() ) {
+					continue;
+				}
+
+				if ( $subscription->payment_method !== $order->payment_method ) {
+
+					// Set the new payment method on the subscription
+					$available_gateways = WC()->payment_gateways->get_available_payment_gateways();
+					$payment_method     = isset( $available_gateways[ $order->payment_method ] ) ? $available_gateways[ $order->payment_method ] : false;
+
+					if ( $payment_method && $payment_method->supports( 'subscriptions' ) ) {
+						$subscription->set_payment_method( $payment_method );
+						$subscription->update_manual( false );
+					}
+				}
+			}
+		}
+
+		return $payment_processing_result;
 	}
 
 	/** Deprecated Methods **/

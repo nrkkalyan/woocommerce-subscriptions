@@ -51,7 +51,7 @@ class WCS_Cart_Renewal {
 		add_action( 'woocommerce_cart_loaded_from_session', array( &$this, 'cart_items_loaded_from_session' ), 10 );
 
 		// Make sure fees are added to the cart
-		add_action( 'woocommerce_cart_calculate_fees', array( &$this, 'maybe_add_subscription_fees' ), 10, 1 );
+		add_action( 'woocommerce_cart_calculate_fees', array( &$this, 'maybe_add_fees' ), 10, 1 );
 
 		// Allow renewal of limited subscriptions
 		add_filter( 'woocommerce_subscription_is_purchasable', array( &$this, 'is_purchasable' ), 12, 2 );
@@ -119,6 +119,9 @@ class WCS_Cart_Renewal {
 				if ( WC()->cart->cart_contents_count != 0 ) {
 					// Store renewal order's ID in session so it can be re-used after payment
 					WC()->session->set( 'order_awaiting_payment', $order_id );
+
+					// Set cart hash for orders paid in WC >= 2.6
+					$this->set_cart_hash( $order_id );
 				}
 
 				wp_safe_redirect( WC()->cart->get_checkout_url() );
@@ -346,7 +349,7 @@ class WCS_Cart_Renewal {
 
 				$price = $item_to_renew['line_subtotal'];
 
-				if ( 'yes' === get_option( 'woocommerce_prices_include_tax' ) ) {
+				if ( wc_prices_include_tax() ) {
 					$base_tax_rates = WC_Tax::get_base_tax_rates( $_product->tax_class );
 					$base_taxes_on_item = WC_Tax::calc_tax( $price, $base_tax_rates, false, false );
 					$price += array_sum( $base_taxes_on_item );
@@ -533,7 +536,7 @@ class WCS_Cart_Renewal {
 		}
 	}
 
-	/*
+	/**
 	 * Checks the cart to see if it contains a subscription renewal item.
 	 *
 	 * @see wcs_cart_contains_renewal()
@@ -599,6 +602,10 @@ class WCS_Cart_Renewal {
 	 * @since 2.0.10
 	 */
 	public function renewal_coupon_data( $data, $code ) {
+
+		if ( ! is_object( WC()->session ) ) {
+			return $data;
+		}
 
 		$renewal_coupons = WC()->session->get( 'wcs_renewal_coupons' );
 
@@ -704,6 +711,74 @@ class WCS_Cart_Renewal {
 		WC()->session->set( 'wcs_renewal_coupons', array() );
 	}
 
+	/**
+	 * Add order/subscription fee line items to the cart when a renewal order, initial order or resubscribe is in the cart.
+	 *
+	 * @param WC_Cart $cart
+	 * @since 2.0.13
+	 */
+	public function maybe_add_fees( $cart ) {
+
+		if ( $cart_item = $this->cart_contains() ) {
+
+			$order = $this->get_order( $cart_item );
+
+			if ( $order instanceof WC_Order ) {
+				foreach ( $order->get_fees() as $fee ) {
+					$cart->add_fee( $fee['name'], $fee['line_total'], abs( $fee['line_tax'] ) > 0, $fee['tax_class'] );
+				}
+			}
+		}
+	}
+
+	/**
+	 * When restoring the cart from the session, if the cart item contains addons, as well as
+	 * a renewal or resubscribe, do not adjust the price because the original order's price will
+	 * be used, and this includes the addons amounts.
+	 *
+	 * @since 2.0
+	 */
+	public function product_addons_adjust_price( $adjust_price, $cart_item ) {
+
+		if ( true === $adjust_price && isset( $cart_item[ $this->cart_item_key ] ) ) {
+			$adjust_price = false;
+		}
+
+		return $adjust_price;
+	}
+
+	/**
+	 * Get the order object used to construct the renewal cart.
+	 *
+	 * @param Array The renewal cart item.
+	 * @return WC_Order | The order object
+	 * @since  2.0.13
+	 */
+	protected function get_order( $cart_item = '' ) {
+		$order = false;
+
+		if ( empty( $cart_item ) ) {
+			$cart_item = $this->cart_contains();
+		}
+
+		if ( false !== $cart_item  && isset( $cart_item[ $this->cart_item_key ] ) ) {
+			$order = wc_get_order( $cart_item[ $this->cart_item_key ]['renewal_order_id'] );
+		}
+
+		return $order;
+	}
+
+	/**
+	 * Before allowing payment on an order awaiting payment via checkout, WC >= 2.6 validates
+	 * order items haven't changed by checking for a cart hash on the order, so we need to set
+	 * that here. @see WC_Checkout::create_order()
+	 *
+	 * @since 2.0.14
+	 */
+	protected function set_cart_hash( $order_id ) {
+		update_post_meta( $order_id, '_cart_hash', md5( json_encode( wc_clean( WC()->cart->get_cart_for_session() ) ) . WC()->cart->total ) );
+	}
+
 	/* Deprecated */
 
 	/**
@@ -733,38 +808,7 @@ class WCS_Cart_Renewal {
 	 * @since 2.0.10
 	 */
 	public function maybe_add_subscription_fees( $cart ) {
-
-		if ( $this->cart_contains() ) {
-			$subscriptions = array();
-
-			foreach ( $cart->cart_contents as $cart_item ) {
-
-				if ( isset( $cart_item[ $this->cart_item_key ]['subscription_id'] ) && ! in_array( $cart_item[ $this->cart_item_key ]['subscription_id'], $subscriptions ) ) {
-					$subscription    = wcs_get_subscription( $cart_item[ $this->cart_item_key ]['subscription_id'] );
-					$subscriptions[] = $subscription->id;
-
-					foreach ( $subscription->get_fees() as $fee ) {
-						$cart->add_fee( $fee['name'], $fee['line_total'], $fee['line_subtotal_tax'] > 0, $fee['tax_class'] );
-					}
-				}
-			}
-		}
-	}
-
-	/**
-	 * When restoring the cart from the session, if the cart item contains addons, as well as
-	 * a renewal or resubscribe, do not adjust the price because the original order's price will
-	 * be used, and this includes the addons amounts.
-	 *
-	 * @since 2.0
-	 */
-	public function product_addons_adjust_price( $adjust_price, $cart_item ) {
-
-		if ( true === $adjust_price && isset( $cart_item[ $this->cart_item_key ] ) ) {
-			$adjust_price = false;
-		}
-
-		return $adjust_price;
+		_deprecated_function( __METHOD__, '2.0.13', __CLASS__ .'::maybe_add_fees()' );
 	}
 }
 new WCS_Cart_Renewal();

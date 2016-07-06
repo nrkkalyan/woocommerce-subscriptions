@@ -547,11 +547,16 @@ class WCS_Admin_Post_Types {
 				if ( 0 == $the_subscription->get_time( $column, 'gmt' ) ) {
 					$column_content .= '-';
 				} else {
-					$column_content .= sprintf( '<time class="%s" title="%s">%s</time>', esc_attr( $column ), esc_attr( $the_subscription->get_time( $column, 'site' ) ), esc_html( $the_subscription->get_date_to_display( $column ) ) );
+					$column_content .= sprintf( '<time class="%s" title="%s">%s</time>', esc_attr( $column ), esc_attr( date( __( 'Y/m/d g:i:s A', 'woocommerce-subscriptions' ) , $the_subscription->get_time( $column, 'site' ) ) ), esc_html( $the_subscription->get_date_to_display( $column ) ) );
+
+					if ( 'next_payment_date' == $column && $the_subscription->payment_method_supports( 'gateway_scheduled_payments' ) && ! $the_subscription->is_manual() && $the_subscription->has_status( 'active' ) ) {
+						$column_content .= '<div class="woocommerce-help-tip" data-tip="' . esc_attr__( 'This date should be treated as an estimate only. The payment gateway for this subscription controls when payments are processed.', 'woocommerce-subscriptions' ) . '"></div>';
+					}
 				}
 
 				$column_content = $column_content;
 				break;
+
 			case 'orders' :
 				$column_content .= $this->get_related_orders_link( $the_subscription );
 				break;
@@ -642,6 +647,19 @@ class WCS_Admin_Post_Types {
 					SELECT order_id
 					FROM {$wpdb->prefix}woocommerce_order_items as order_items
 					WHERE order_item_name LIKE '%%%s%%'
+					",
+					esc_attr( $_GET['s'] )
+				)
+			),
+			$wpdb->get_col(
+				$wpdb->prepare( "
+					SELECT p1.ID
+					FROM {$wpdb->posts} p1
+					INNER JOIN {$wpdb->postmeta} p2 ON p1.ID = p2.post_id
+					INNER JOIN {$wpdb->users} u ON p2.meta_value = u.ID
+					WHERE u.user_email LIKE '%%%s%%'
+					AND p2.meta_key = '_customer_user'
+					AND p1.post_type = 'shop_subscription'
 					",
 					esc_attr( $_GET['s'] )
 				)

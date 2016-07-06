@@ -787,7 +787,7 @@ class WC_Subscription extends WC_Order {
 		foreach ( $timestamps as $date_type => $datetime ) {
 			switch ( $date_type ) {
 				case 'end' :
-					if ( array_key_exists( 'last_payment', $timestamps ) && $datetime <= $timestamps['last_payment'] ) {
+					if ( array_key_exists( 'last_payment', $timestamps ) && $datetime < $timestamps['last_payment'] ) {
 						$messages[] = sprintf( __( 'The %s date must occur after the last payment date.', 'woocommerce-subscriptions' ), $date_type );
 					}
 
@@ -980,7 +980,7 @@ class WC_Subscription extends WC_Order {
 		} else {
 
 			// The next payment date is {interval} billing periods from the start date, trial end date or last payment date
-			if ( 0 !== $next_payment_time && $next_payment_time < gmdate( 'U' ) && 1 <= $this->get_completed_payment_count() ) {
+			if ( 0 !== $next_payment_time && $next_payment_time < gmdate( 'U' ) && ( ( 0 !== $trial_end_time && 1 >= $this->get_completed_payment_count() ) || WC_Subscriptions_Synchroniser::subscription_contains_synced_product( $this ) ) ) {
 				$from_timestamp = $next_payment_time;
 			} elseif ( $last_payment_time > $start_time && apply_filters( 'wcs_calculate_next_payment_from_last_payment', true, $this ) ) {
 				$from_timestamp = $last_payment_time;
@@ -1172,7 +1172,7 @@ class WC_Subscription extends WC_Order {
 	 *
 	 * This is protected because it should not be used directly by outside methods. If you need
 	 * to display the price of a subscription, use the @see $this->get_formatted_order_total(),
-	 * @see $this->get_subtotal_to_display() or @see $this->get_formatted_line_subtotal() method.If
+	 * @see $this->get_subtotal_to_display() or @see $this->get_formatted_line_subtotal() method.
 	 * If you want to customise which aspects of a price string are displayed for all subscriptions,
 	 * use the filter 'woocommerce_subscription_price_string_details'.
 	 *
@@ -1246,7 +1246,7 @@ class WC_Subscription extends WC_Order {
 	public function payment_complete( $transaction_id = '' ) {
 
 		// Make sure the last order's status is updated
-		$last_order = $this->get_last_order( 'all' );
+		$last_order = $this->get_last_order( 'all', 'any' );
 
 		if ( false !== $last_order && $last_order->needs_payment() ) {
 			$last_order->payment_complete( $transaction_id );
@@ -1271,7 +1271,7 @@ class WC_Subscription extends WC_Order {
 
 		do_action( 'woocommerce_subscription_payment_complete', $this );
 
-		if ( $this->get_completed_payment_count() > 1 ) {
+		if ( false !== $last_order && wcs_order_contains_renewal( $last_order ) ) {
 			do_action( 'woocommerce_subscription_renewal_payment_complete', $this );
 		}
 	}
@@ -1284,7 +1284,7 @@ class WC_Subscription extends WC_Order {
 	public function payment_failed( $new_status = 'on-hold' ) {
 
 		// Make sure the last order's status is set to failed
-		$last_order = $this->get_last_order( 'all' );
+		$last_order = $this->get_last_order( 'all', 'any' );
 
 		if ( false !== $last_order && false === $last_order->has_status( 'failed' ) ) {
 			remove_filter( 'woocommerce_order_status_changed', 'WC_Subscriptions_Renewal_Order::maybe_record_subscription_payment' );
@@ -1304,7 +1304,7 @@ class WC_Subscription extends WC_Order {
 
 		do_action( 'woocommerce_subscription_payment_failed', $this, $new_status );
 
-		if ( $this->get_completed_payment_count() > 1 ) {
+		if ( false !== $last_order && wcs_order_contains_renewal( $last_order ) ) {
 			do_action( 'woocommerce_subscription_renewal_payment_failed', $this );
 		}
 	}
@@ -1439,32 +1439,44 @@ class WC_Subscription extends WC_Order {
 	 * Gets the most recent order that relates to a subscription, including renewal orders and the initial order (if any).
 	 *
 	 * @param string $return_fields The columns to return, either 'all' or 'ids'
+	 * @param array $order_types Can include any combination of 'parent', 'renewal', 'switch' or 'any' which will return the latest renewal order of any type. Defaults to 'parent' and 'renewal'.
 	 * @since 2.0
 	 */
-	public function get_last_order( $return_fields = 'ids' ) {
+	public function get_last_order( $return_fields = 'ids', $order_types = array( 'parent', 'renewal' ) ) {
 
-		$return_fields = ( 'ids' == $return_fields ) ? $return_fields : 'all';
+		$return_fields  = ( 'ids' == $return_fields ) ? $return_fields : 'all';
+		$order_types    = ( 'any' == $order_types ) ? array( 'parent', 'renewal', 'switch' ) : $order_types;
+		$related_orders = array();
 
-		$last_order = false;
-
-		$renewal_post_ids = WC_Subscriptions::$cache->cache_and_get( 'wcs-related-orders-to-' . $this->id, array( $this, 'get_related_orders_query' ), array( $this->id ) );
-
-		// If there are no renewal orders, get the original order (if there is one)
-		if ( empty( $renewal_post_ids ) ) {
-
-			if ( false !== $this->order ) {
-				if ( 'all' == $return_fields ) {
-					$last_order = $this->order;
-				} else {
-					$last_order = $this->order->id;
-				}
+		foreach ( $order_types as $order_type ) {
+			switch ( $order_type ) {
+				case 'parent':
+					if ( false !== $this->order ) {
+						$related_orders[] = $this->order->id;
+					}
+					break;
+				case 'renewal':
+					$related_orders = array_merge( $related_orders, WC_Subscriptions::$cache->cache_and_get( 'wcs-related-orders-to-' . $this->id, array( $this, 'get_related_orders_query' ), array( $this->id ) ) );
+					break;
+				case 'switch':
+					$related_orders = array_merge( $related_orders, array_keys( wcs_get_switch_orders_for_subscription( $this->id ) ) );
+					break;
+				default:
+					break;
 			}
-		} else {
+		}
 
-			$last_order = array_shift( $renewal_post_ids );
+		if ( empty( $related_orders ) ) {
+			$last_order = false;
+		} else {
+			$last_order = max( $related_orders );
 
 			if ( 'all' == $return_fields ) {
-				$last_order = wc_get_order( $last_order );
+				if ( false !== $this->order && $last_order == $this->order->id ) {
+					$last_order = $this->order;
+				} else {
+					$last_order = wc_get_order( $last_order );
+				}
 			}
 		}
 
@@ -1504,7 +1516,7 @@ class WC_Subscription extends WC_Order {
 	 * @param WC_Payment_Gateway|empty $payment_method
 	 * @param array $payment_meta Associated array of the form: $database_table => array( value, )
 	 */
-	public function set_payment_method( $payment_gateway, $payment_meta = array() ) {
+	public function set_payment_method( $payment_gateway = '', $payment_meta = array() ) {
 
 		if ( ! empty( $payment_meta ) && isset( $payment_gateway->id ) ) {
 			$this->set_payment_method_meta( $payment_gateway->id, $payment_meta );
@@ -1645,10 +1657,11 @@ class WC_Subscription extends WC_Order {
 	 * with a 10 BTC sign-up fee was purchased, a total 30 BTC was paid as the sign-up fee but this function will return 10 BTC.
 	 *
 	 * @param array|int Either an order item (in the array format returned by self::get_items()) or the ID of an order item.
+	 * @param  string $tax Whether or not to adjust sign up fee if prices inc tax - ensures that the sign up fee paid amount includes the paid tax if inc
 	 * @return bool
 	 * @since 2.0
 	 */
-	public function get_items_sign_up_fee( $line_item ) {
+	public function get_items_sign_up_fee( $line_item, $tax = 'exclusive_of_tax' ) {
 
 		if ( ! is_array( $line_item ) ) {
 			$line_item = wcs_get_order_item( $line_item, $this );
@@ -1685,6 +1698,11 @@ class WC_Subscription extends WC_Order {
 
 				// Sign-up fee is any amount on top of recurring amount
 				$sign_up_fee = max( $original_order_item['line_total'] / $original_order_item['qty'] - $line_item['line_total'] / $line_item['qty'], 0 );
+			}
+
+			// If prices inc tax, ensure that the sign up fee amount includes the tax
+			if ( 'inclusive_of_tax' === $tax && ! empty( $original_order_item ) && ( 'yes' == $this->prices_include_tax || true === $this->prices_include_tax ) ) {
+				$sign_up_fee += $original_order_item['line_tax'];
 			}
 		}
 

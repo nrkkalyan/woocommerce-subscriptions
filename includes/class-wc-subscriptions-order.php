@@ -62,6 +62,8 @@ class WC_Subscriptions_Order {
 
 		add_action( 'woocommerce_order_partially_refunded', __CLASS__ . '::maybe_cancel_subscription_on_partial_refund' );
 		add_action( 'woocommerce_order_fully_refunded', __CLASS__ . '::maybe_cancel_subscription_on_full_refund' );
+
+		add_filter( 'woocommerce_order_needs_shipping_address', __CLASS__ . '::maybe_display_shipping_address', 10, 3 );
 	}
 
 	/*
@@ -428,39 +430,42 @@ class WC_Subscriptions_Order {
 
 					$new_start_date_offset = current_time( 'timestamp', true ) - $subscription->get_time( 'start' );
 
-					$dates = array( 'start' => current_time( 'mysql', true ) );
+					// if the payment has been processed more than an hour after the order was first created, let's update the dates on the subscription to account for that, because it may have even been processed days after it was first placed
+					if ( $new_start_date_offset > HOUR_IN_SECONDS ) {
 
-					if ( 0 != $subscription->get_time( 'trial_end' ) ) {
-						$dates['trial_end'] = gmdate( 'Y-m-d H:i:s', $subscription->get_time( 'trial_end' ) + $new_start_date_offset );
-					}
-
-					if ( 0 != $subscription->get_time( 'next_payment' ) ) {
+						$dates = array( 'start' => current_time( 'mysql', true ) );
 
 						if ( WC_Subscriptions_Synchroniser::subscription_contains_synced_product( $subscription ) ) {
 
-							$prior_date = isset( $dates['trial_end'] ) ? $dates['trial_end'] : $dates['start'];
+							$trial_end    = $subscription->get_time( 'trial_end' );
+							$next_payment = $subscription->get_time( 'next_payment' );
 
-							if ( $subscription->get_time( 'next_payment' ) < strtotime( $prior_date ) ) {
+							// if either there is a free trial date or a next payment date that falls before now, we need to recalculate all the sync'd dates
+							if ( ( $trial_end > 0 && $trial_end < strtotime( $dates['start'] ) ) || ( $next_payment > 0 && $next_payment < strtotime( $dates['start'] ) ) ) {
 
 								foreach ( $subscription->get_items() as $item ) {
 									$product_id = wcs_get_canonical_product_id( $item );
 
 									if ( WC_Subscriptions_Synchroniser::is_product_synced( $product_id ) ) {
-										$dates['next_payment'] = WC_Subscriptions_Synchroniser::calculate_first_payment_date( $product_id );
+										$dates['trial_end']    = WC_Subscriptions_Product::get_trial_expiration_date( $product_id, $dates['start'] );
+										$dates['next_payment'] = WC_Subscriptions_Synchroniser::calculate_first_payment_date( $product_id, 'mysql', $dates['start'] );
+										$dates['end']          = WC_Subscriptions_Product::get_expiration_date( $product_id, $dates['start'] );
 										break;
 									}
 								}
 							}
 						} else {
-							$dates['next_payment'] = gmdate( 'Y-m-d H:i:s', $subscription->get_time( 'next_payment' ) + $new_start_date_offset );
+							// No sync'ing to mess about with, just add the offset to the existing dates
+							foreach ( array( 'trial_end', 'next_payment', 'end' ) as $date_type ) {
+								if ( 0 != $subscription->get_time( $date_type ) ) {
+									$dates[ $date_type ] = gmdate( 'Y-m-d H:i:s', $subscription->get_time( $date_type ) + $new_start_date_offset );
+								}
+							}
 						}
+
+						$subscription->update_dates( $dates );
 					}
 
-					if ( 0 != $subscription->get_time( 'end' ) ) {
-						$dates['end'] = gmdate( 'Y-m-d H:i:s', $subscription->get_time( 'end' ) + $new_start_date_offset );
-					}
-
-					$subscription->update_dates( $dates );
 					$subscription->payment_complete();
 					$was_activated = true;
 
@@ -909,6 +914,39 @@ class WC_Subscriptions_Order {
 				self::maybe_cancel_subscription_on_full_refund( $order );
 			}
 		}
+	}
+
+	/**
+	 * If the order doesn't contain shipping methods because it contains synced or trial products but the related subscription(s) does have a shipping method.
+	 * This function will ensure the shipping address is still displayed in order emails and on the order received and view order pages.
+	 *
+	 * @param bool $needs_shipping
+	 * @param array $hidden_shipping_methods shipping method IDs which should hide shipping addresses (defaulted to array( 'local_pickup' ))
+	 * @param WC_Order $order
+	 *
+	 * @return bool $needs_shipping whether an order needs to display the shipping address
+	 *
+	 * @since 2.0.14
+	 */
+	public static function maybe_display_shipping_address( $needs_shipping, $hidden_shipping_methods, $order ) {
+		$order_shipping_methods = $order->get_shipping_methods();
+
+		if ( ! $needs_shipping && wcs_order_contains_subscription( $order ) && empty( $order_shipping_methods ) ) {
+
+			$subscriptions = wcs_get_subscriptions_for_order( $order );
+
+			foreach ( $subscriptions as $subscription ) {
+				foreach ( $subscription->get_shipping_methods() as $shipping_method ) {
+
+					if ( ! in_array( $shipping_method['method_id'], $hidden_shipping_methods ) ) {
+						$needs_shipping = true;
+						break 2;
+					}
+				}
+			}
+		}
+
+		return $needs_shipping;
 	}
 
 	/* Deprecated Functions */
